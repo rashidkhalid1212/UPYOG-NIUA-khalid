@@ -58,6 +58,7 @@ import java.util.Optional;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.egov.common.entity.edcr.*;
+import org.egov.edcr.service.ConfigCacheService;
 import org.egov.edcr.service.MDMSCacheManager;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -75,6 +76,9 @@ public class Ventilation extends FeatureProcess {
 
 	 @Autowired
 	 MDMSCacheManager cache;
+
+	 @Autowired
+	 private ConfigCacheService configCacheService;
 
 	/**
 	 * Validates the building plan for ventilation requirements.
@@ -98,14 +102,20 @@ public class Ventilation extends FeatureProcess {
 	 */
 	@Override
 	public Plan process(Plan pl) {
-	    for (Block b : pl.getBlocks()) {
+		boolean unitLayerEnabled = configCacheService.isUnitLayerEnabled();
+
+		for (Block b : pl.getBlocks()) {
 	        BigDecimal[] ventilationValues = extractVentilationRules(pl);
 	        ScrutinyDetail generalScrutiny = createScrutinyDetail(COMMON_VENTILATION);
 	        ScrutinyDetail bathScrutiny = createScrutinyDetail(BATH_VENTILATION);
 
 	        if (b.getBuilding() != null && b.getBuilding().getFloors() != null) {
 	            for (Floor f : b.getBuilding().getFloors()) {
-	                processGeneralVentilation(f, ventilationValues[0], generalScrutiny, pl);
+					if (unitLayerEnabled) {
+						processUnitWiseVentilation(f, ventilationValues[0], generalScrutiny, pl);
+					} else {
+						processGeneralVentilation(f, ventilationValues[0], generalScrutiny, pl);
+					}
 	                // processBathroomVentilation(f, ventilationValues[1], bathScrutiny, pl); // Uncomment if needed
 	            }
 	        }
@@ -191,6 +201,44 @@ public class Ventilation extends FeatureProcess {
 				addScrutinyDetailtoPlan(scrutinyDetail, pl, details);
 	        }
 	    }
+	}
+
+	private void processUnitWiseVentilation(Floor floor, BigDecimal ventilationRatio, ScrutinyDetail scrutinyDetail, Plan pl) {
+		if (floor.getUnits() == null || floor.getUnits().isEmpty()) {
+			return;
+		}
+
+		for (FloorUnit floorUnit : floor.getUnits()) {
+			if (floorUnit.getLightAndVentilation() == null || floorUnit.getLightAndVentilation().getMeasurements() == null || floorUnit.getLightAndVentilation().getMeasurements().isEmpty()) {
+				continue;
+			}
+
+			BigDecimal totalVentilationArea =
+					floorUnit.getLightAndVentilation()
+							.getMeasurements()
+							.stream()
+							.map(Measurement::getArea)
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+
+			BigDecimal totalCarpetArea =
+					floorUnit.getOccupancies()
+							.stream()
+							.map(Occupancy::getCarpetArea)
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+
+			if (totalVentilationArea.compareTo(BigDecimal.ZERO) > 0) {
+				BigDecimal requiredVentilation = totalCarpetArea.divide(ventilationRatio, 2, BigDecimal.ROUND_HALF_UP);
+				ReportScrutinyDetail detail = new ReportScrutinyDetail();
+				detail.setRuleNo(RULE_43);
+				detail.setDescription(LIGHT_VENTILATION_DESCRIPTION);
+				detail.setRequired(MINIMUM_PREFIX_1 + ventilationRatio + TH_OF_FLOOR_AREA);
+				detail.setProvided(VENTILATION_AREA + totalVentilationArea + OF_CARPET_AREA + totalCarpetArea + AT_FLOOR + floorUnit.getNumber());
+				detail.setStatus(totalVentilationArea.compareTo(requiredVentilation) >= 0 ? Result.Accepted.getResultVal() : Result.Not_Accepted.getResultVal());
+
+				Map<String, String> details = mapReportDetails(detail);
+				addScrutinyDetailtoPlan(scrutinyDetail, pl, details);
+			}
+		}
 	}
 
 	/**

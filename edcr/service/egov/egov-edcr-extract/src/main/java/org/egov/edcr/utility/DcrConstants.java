@@ -216,4 +216,5 @@ public class DcrConstants {
 
     /** App config value: KABEJA (default) or ASPOSE; read in DxfToPdfUnifiedConverter. */
     public static final String DXF_TO_PDF_ENGINE = "DXF_TO_PDF_ENGINE";
+    public static final String FLOOR_UNIT_LAYER_ENABLED = "FLOOR_UNIT_LAYER_ENABLED";
 }
